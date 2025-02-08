@@ -79,11 +79,12 @@ def monitor_game():
                 # 게임 시작 감지 시, 동적 정보를 사용해 메시지 구성
                 champion = start_info.get("champion", "N/A")
                 game_time = start_info.get("gameTime", "N/A")
+                url = "https://lol.ps/summoner/" + SUMMONER_NAME + "?region=kr"
                 start_msg = (
                     f"[고병국님이 게임중입니다!]\n"
                     f"챔피언 : {champion}\n"
                     f"게임 시간 : {game_time}\n"
-                    "전적 보러 가기 : https://lol.ps/summoner/{SUMMONER_NAME}?region=kr"
+                    f"전적 보러 가기 : {url}"
                 )
                 print("게임 시작 감지:", start_msg)
                 result = send_kakao_message(start_msg)
@@ -94,7 +95,7 @@ def monitor_game():
                 if finished_info:
                     outcome = "승리" if finished_info.get("win") else "패배"
                     kda = f"{finished_info.get('kills')}/{finished_info.get('deaths')}/{finished_info.get('assists')}"
-                    record_url = "https://lol.ps/summoner/{SUMMONER_NAME}?region=kr"
+                    record_url = "https://lol.ps/summoner/" + SUMMONER_NAME + "?region=kr"
                     end_msg = (
                         f"[고병국님의 게임이 끝났습니다.]\n"
                         f"결과 : {outcome}\n"

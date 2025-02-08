@@ -1,0 +1,6 @@
+# API, 소환사명 등 민감 정보 처리
+config.py
+
+# pycache 파일
+*.pycache
+
