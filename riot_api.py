@@ -4,6 +4,37 @@ import requests
 from urllib.parse import quote
 from config import RIOT_API_KEY, RIOT_REGION, RIOT_SUMMONER_REGION, SUMMONER_NAME
 
+# 챔피언 정보를 캐시하기 위한 전역 변수
+CHAMPION_MAPPING = None
+
+def get_champion_mapping():
+    """
+    Data Dragon의 한국어 챔피언 데이터를 가져와서
+    챔피언의 key와 한국어 이름을 매핑한 딕셔너리를 반환합니다.
+    캐시되어 있다면 재요청하지 않습니다.
+    """
+    global CHAMPION_MAPPING
+    if CHAMPION_MAPPING is None:
+        try:
+            champion_url = "https://ddragon.leagueoflegends.com/cdn/15.3.1/data/ko_KR/champion.json"
+            resp = requests.get(champion_url, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            # 챔피언의 key(문자열)와 한국어 이름 매핑 생성
+            CHAMPION_MAPPING = {champ["key"]: champ["name"] for champ in data.get("data", {}).values()}
+        except Exception as e:
+            print("챔피언 데이터 로드 중 오류 발생:", e)
+            CHAMPION_MAPPING = {}
+    return CHAMPION_MAPPING
+
+def get_champion_name(champion_id):
+    """
+    챔피언 id를 받아서 한국어 챔피언 이름을 반환합니다.
+    만약 데이터를 찾지 못하면 "~"를 반환합니다.
+    """
+    mapping = get_champion_mapping()
+    return mapping.get(str(champion_id), "~")
+
 def get_account_info(game_name, tag_line):
     """
     소환사 정보 조회.
@@ -15,67 +46,153 @@ def get_account_info(game_name, tag_line):
     response.raise_for_status()
     return response.json()
 
-def get_champion_name(champion_id):
-    try:
-        # 해당 버전의 챔피언 데이터 파일 URL 생성
-        champion_url = "https://ddragon.leagueoflegends.com/cdn/15.3.1/data/ko_KR/champion.json"
-        resp = requests.get(champion_url, timeout=5)  # 요청 보내기
-        resp.raise_for_status()  # HTTP 오류 발생시 예외 발생
-        data = resp.json()
-        
-        # 딕셔너리 컴프리헨션을 사용해 챔피언 번호(key)와 이름(name) 매핑 생성
-        champion_mapping = {champ["key"]: champ["name"] for champ in data.get("data", {}).values()}
-        
-        # 챔피언 번호가 문자열인지 여부 확인 후 반환 (숫자인 경우 문자열로 변환)
-        return champion_mapping.get(str(champion_id))
-    except Exception as e:
-        print("챔피언 이름을 가져오는 중 오류 발생:", e)
-    return None
+def format_team_lineup(team_participants):
+    """
+    팀 참가자 정보를 받아서, 각 포지션별(탑, 정글, 미드, 원딜, 서폿)
+    팀원 정보를 구성합니다.
+    각 팀원의 이름은 우선순위: riotId > summonerName > summonerId 순이며,
+    챔피언 이름은 한국어로 출력됩니다.
+    """
+    lanes = ["탑", "정글", "미드", "원딜", "서폿"]
+    team_lineup = {}
+    if len(team_participants) == 5:
+        for lane, p in zip(lanes, team_participants):
+            display_name = p.get("riotId") or p.get("summonerName") or p.get("summonerId", "알수없음")
+            k = p.get("kills", 0)
+            d = p.get("deaths", 0)
+            a = p.get("assists", 0)
+            kda = f"{k}/{d}/{a}"
+            # champion_id를 이용해 get_champion_name() 함수에서 한국어 이름 반환
+            champ_name = get_champion_name(p.get("championId"))
+            team_lineup[lane] = f"{display_name} [{champ_name}, {kda}]"
+    else:
+        team_lineup = {lane: "~" for lane in lanes}
+    return team_lineup
 
-def get_start_game_info(summoner_id):
+def get_start_game_info(puuid):
     """
-    활성 게임 정보를 조회하여, 게임이 진행 중이면 플레이어의 챔피언과 게임 시간을 반환합니다.
+    활성 게임 정보를 조회하여 게임이 진행 중이면 다음 정보를 반환합니다:
+      - 선택 챔피언 이름 (대상 소환사가 선택한 챔피언)
+      - 게임 경과 시간 (게임 시작 후 경과 시간, '분 초' 형식)
+      - 게임 종류 (gameQueueConfigId 기준: 개인 랭크, 자유 랭크, 특별 게임 모드)
+      - 팀원 정보 (같은 팀 5명의 참가자에 대해, 각 팀원의 실제 소환사 이름과 챔피언 정보)
+      - summonerId (대상 소환사의 암호화된 summonerId)
+
     게임이 진행 중이지 않으면 False 반환.
-    반환 예시: {"champion": "아우렐리온 솔", "gameTime": "3분 37초"}
+
+    반환 예시:
+      {
+         "champion": "제이스",
+         "gameTime": "9분 10초",
+         "gameType": "개인 랭크",
+         "teamLineup": {
+              "탑": "no1 다리우스킹#KR1 [아리]",
+              "정글": "抖音一休sup#小挽心 [제이스]",
+              "미드": "나는 짱 쎄다#KR1 [징크스]",
+              "원딜": "Adore정수정K#KR1 [바이]",
+              "서폿": "룰루 [룰루]"
+         },
+         "summonerId": "bs23KIeQszxJb0BHz2nXz4ggxJ-4Tg-xueWKN13ErDdFr8c"
+      }
     """
-    encrypted_summoner_id = quote(summoner_id)
-    url = f"https://{RIOT_SUMMONER_REGION}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{encrypted_summoner_id}"
+    encrypted_puuid = quote(puuid)
+    url = f"https://{RIOT_SUMMONER_REGION}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{encrypted_puuid}"
     headers = {"X-Riot-Token": RIOT_API_KEY}
+
     response = requests.get(url, headers=headers, timeout=10)
     if response.status_code == 404:
-        # 활성 게임 정보가 없으므로 종료된 경기 정보를 반환
+        # 활성 게임 정보가 없으므로 False 반환
         return False
     response.raise_for_status()
     game_data = response.json()
-    # print(game_data)
-    if not game_data:
-        return game_data
-    # config에 있는 소환사 이름에서 '#' 앞부분만 취한 뒤 양쪽 공백 제거, 소문자로 변환
-    target_name = SUMMONER_NAME.split("#")[0].strip().lower()
-    champion_id = 1
-    for participant in game_data.get("participants", []):
-        # summonerName 대신 summonerId로 비교
-        print(participant.get("summoner_id", "").strip())
-        print(encrypted_summoner_id)
-        if participant.get("puuid", "").strip() == encrypted_summoner_id:
-            champion_id = participant.get("championId")
-            break
+    print(game_data)  # 디버깅용: game_data 확인
 
-    champion = get_champion_name(champion_id) if champion_id is not None else "N/A"
-    game_length_seconds = game_data.get("gameLength", 0) + 150
+    # 전달받은 puuid와 같은 참가자를 찾아 대상 소환사(target) 결정
+    target = None
+    for p in game_data.get("participants", []):
+        if p.get("puuid") == puuid:
+            target = p
+            break
+    if not target:
+        print("타겟 참가자를 찾을 수 없습니다.")
+        return False
+
+    # 대상 소환사가 선택한 챔피언 이름 (championId를 기반으로)
+    champion_id = target.get("championId")
+    champion = get_champion_name(champion_id) if champion_id else "~"
+
+    # 게임 경과 시간 (초 단위를 분, 초 형식으로 변환)
+    game_length_seconds = game_data.get("gameLength", 0)
     minutes = game_length_seconds // 60
     seconds = game_length_seconds % 60
     game_time_str = f"{minutes}분 {seconds}초"
-    return {"champion": champion, "gameTime": game_time_str}
+
+    # 게임 종류: gameQueueConfigId 값을 사용 (존재하지 않으면 기본값 "~")
+    queue_id = game_data.get("gameQueueConfigId")
+    if queue_id == 420:
+        game_type = "개인 랭크"
+    elif queue_id == 440:
+        game_type = "자유 랭크"
+    elif queue_id:
+        game_type = "특별 게임 모드"
+    else:
+        game_type = "~"
+
+    # 같은 팀 참가자(팀 ID가 동일한 참가자) 추출하여 팀 라인업 구성
+    my_team_id = target.get("teamId")
+    team_participants = [p for p in game_data.get("participants", []) if p.get("teamId") == my_team_id]
+    
+    team_lineup = format_team_lineup(team_participants)
+
+    return {
+        "champion": champion,
+        "gameTime": game_time_str,
+        "gameType": game_type,
+        "teamLineup": team_lineup,
+        "summonerId": target.get("summonerId")
+    }
+
+def get_summoner_tier(summoner_id):
+    """
+    소환사의 티어 정보를 조회합니다.
+    API Endpoint:
+      GET /lol/league/v4/entries/by-summoner/{encryptedSummonerId}
+    반환 예시:
+      "실버4 37포인트"
+    """
+    encrypted_summoner_id = quote(summoner_id)
+    url = f"https://kr.api.riotgames.com/lol/league/v4/entries/by-summoner/{encrypted_summoner_id}?api_key={RIOT_API_KEY}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+    # 일반적으로 솔로랭크 큐 "RANKED_SOLO_5x5" 정보를 사용합니다.
+    for entry in data:
+        if entry.get("queueType") == "RANKED_SOLO_5x5":
+            tier = entry.get("tier", "티어없음")
+            rank = entry.get("rank", "")
+            lp = entry.get("leaguePoints", 0)
+            # 티어 영어명을 한글로 매핑
+            tier_mapping = {
+                "IRON": "아이언",
+                "BRONZE": "브론즈",
+                "SILVER": "실버",
+                "GOLD": "골드",
+                "PLATINUM": "플래티넘",
+                "DIAMOND": "다이아몬드",
+                "MASTER": "마스터",
+                "GRANDMASTER": "그랜드마스터",
+                "CHALLENGER": "챌린저"
+            }
+            tier_kor = tier_mapping.get(tier.upper(), tier)
+            return f"{tier_kor}{rank} {lp}포인트"
+    return "티어 정보 없음"
 
 def get_finished_game_info(puuid):
     """
     puuid를 사용해 최근 완료된 경기 결과 정보를 조회합니다.
-    1. 최근 경기 ID 조회: GET /lol/match/v5/matches/by-puuid/{puuid}/ids?start=0&count=1
-    2. 해당 경기 상세 정보에서 승리 여부, KDA 정보를 추출합니다.
-    
-    반환 예시:
-        {"win": True, "kills": 10, "deaths": 8, "assists": 2, "matchId": "KR_xxxx"}
+    1. 최근 경기 ID 조회: GET /lol/match-v5/matches/by-puuid/{puuid}/ids?start=0&count=1
+    2. 경기 상세 정보를 통해 승리 여부, KDA, 게임 시간, 게임 종류,
+       포지션별 팀원 정보, 팀 총 킬, 최고 킬 플레이어, 그리고 티어 정보를 추출합니다.
     """
     RIOT_MATCH_REGION = os.environ.get("RIOT_MATCH_REGION", "asia")
     puuid_encoded = quote(puuid)
@@ -83,16 +200,21 @@ def get_finished_game_info(puuid):
         f"https://{RIOT_MATCH_REGION}.api.riotgames.com/lol/match/v5/matches/by-puuid/{puuid_encoded}/ids"
         f"?start=0&count=1&api_key={RIOT_API_KEY}"
     )
+
     response_ids = requests.get(match_ids_url, timeout=10)
     response_ids.raise_for_status()
     match_ids = response_ids.json()
+
     if not match_ids:
         return None
+
     match_id = match_ids[0]
+    # print(match_id)
     match_url = f"https://{RIOT_MATCH_REGION}.api.riotgames.com/lol/match/v5/matches/{match_id}?api_key={RIOT_API_KEY}"
     response_match = requests.get(match_url, timeout=10)
     response_match.raise_for_status()
     match_data = response_match.json()
+    # print(match_data)
     participants = match_data.get("info", {}).get("participants", [])
     target = None
     for p in participants:
@@ -101,10 +223,121 @@ def get_finished_game_info(puuid):
             break
     if not target:
         return None
+
+    # 게임 시간 변환 (초 → 분:초)
+    game_duration_sec = match_data.get("info", {}).get("gameDuration", 0)
+    minutes = game_duration_sec // 60
+    seconds = game_duration_sec % 60
+    game_time = f"{minutes}분 {seconds:02d}초"
+
+    # 게임 종류 설정 (queueId에 따라)
+    queue_id = match_data.get("info", {}).get("queueId")
+    if queue_id == 420:
+        game_type = "개인 랭크"
+    elif queue_id == 440:
+        game_type = "자유 랭크"
+    else:
+        game_type = "특별 게임 모드"
+
+    # 같은 팀 참가자 추출
+    team_id = target.get("teamId")
+    team_participants = [p for p in participants if p.get("teamId") == team_id]
+
+    # 포지션별 팀원 정보 초기화
+    team_lineup = {
+        "탑": "~",
+        "정글": "~",
+        "미드": "~",
+        "원딜": "~",
+        "서폿": "~"
+    }
+
+    for p in team_participants:
+        pos = (p.get("teamPosition") or "").upper()
+        role = (p.get("role") or "").upper()
+        lane = None
+        if pos == "TOP":
+            lane = "탑"
+        elif pos == "JUNGLE":
+            lane = "정글"
+        elif pos in ("MIDDLE", "MID"):
+            lane = "미드"
+        elif pos in ("BOTTOM",):
+            if role == "CARRY":
+                lane = "원딜"
+            elif role == "SUPPORT":
+                lane = "서폿"
+            else:
+                lane = "원딜"
+        elif pos == "UTILITY":
+            lane = "서폿"
+        else:
+            if role == "SUPPORT":
+                lane = "서폿"
+            elif role == "CARRY":
+                lane = "원딜"
+        if lane:
+            nickname = p.get("riotIdGameName") or p.get("summonerName") or "~"
+            champion_id = p.get("championId")
+            # 챔피언 ID가 있으면 한국어 이름 반환, 없으면 "~" 사용
+            champ = get_champion_name(champion_id) if champion_id else "~"
+            k = p.get("kills", 0)
+            d = p.get("deaths", 0)
+            a = p.get("assists", 0)
+            lineup_str = f"{nickname} [{champ}, {k}/{d}/{a}]"
+            team_lineup[lane] = lineup_str
+
+    # 팀 전체 킬 및 최고 킬 플레이어 계산
+    team_total_kills = sum(p.get("kills", 0) for p in team_participants)
+    top_killer = None
+    max_kills = -1
+    for p in team_participants:
+        kills = p.get("kills", 0)
+        if kills > max_kills:
+            max_kills = kills
+            top_killer = p.get("riotIdGameName") or p.get("summonerName")
+    top_killer_info = f"{top_killer} ({max_kills}킬)" if top_killer else ""
+
+    # 플레이어 티어 정보 (솔로 랭크 기준)
+    summoner_id = target.get("summonerId")
+    tier_info = get_summoner_tier(summoner_id) if summoner_id else "티어 정보 없음"
+
     return {
         "win": target.get("win", False),
         "kills": target.get("kills", 0),
         "deaths": target.get("deaths", 0),
         "assists": target.get("assists", 0),
-        "matchId": match_id
+        "matchId": match_id,
+        "gameTime": game_time,
+        "gameType": game_type,
+        "tier": tier_info,
+        "teamLineup": team_lineup,
+        "teamTotalKills": team_total_kills,
+        "topKiller": top_killer_info,
+        "summonerId": summoner_id
     }
+
+def get_overall_game_stats(summoner_id):
+    """
+    주어진 summoner_id로 솔로 랭크 (RANKED_SOLO_5x5) 전체 게임 정보를 조회하여
+    전체 게임 수, 이긴 판 수, 패배한 판 수, 승률을 반환합니다.
+    
+    반환 예시:
+       total_games, win_count, loss_count, win_rate
+    """
+    encrypted_summoner_id = quote(str(summoner_id))
+    url = f"https://{RIOT_SUMMONER_REGION}.api.riotgames.com/lol/league/v4/entries/by-summoner/{encrypted_summoner_id}?api_key={RIOT_API_KEY}"
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    data = response.json()
+
+    # 솔로 랭크 결과(RANKED_SOLO_5x5) 찾기
+    solo = next((entry for entry in data if entry.get("queueType") == "RANKED_SOLO_5x5"), None)
+    if solo:
+        wins = solo.get("wins", 0)
+        losses = solo.get("losses", 0)
+        total = wins + losses
+        win_rate = round(wins * 100 / total, 2) if total > 0 else 0
+        return total, wins, losses, win_rate
+    else:
+        return 0, 0, 0, 0
