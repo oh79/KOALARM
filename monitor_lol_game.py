@@ -166,18 +166,19 @@ def monitor_game():
                     f"게임 시간 : {start_info.get('gameTime', '~')}\n"
                     f"선택 챔피언 : {start_info.get('champion', '~')}\n\n"
                     f"[팀원 정보]\n"
-                    f"탑    : {team_lineup.get('탑', '~')}\n"
-                    f"정글 : {team_lineup.get('정글', '~')}\n"
-                    f"미드  : {team_lineup.get('미드', '~')}\n"
-                    f"원딜 : {team_lineup.get('원딜', '~')}\n"
-                    f"서폿 : {team_lineup.get('서폿', '~')}\n\n"
+                    f"팀원 1    : {team_lineup.get('탑', '~')}\n"
+                    f"팀원 2    : {team_lineup.get('정글', '~')}\n"
+                    f"팀원 3    : {team_lineup.get('미드', '~')}\n"
+                    f"팀원 4    : {team_lineup.get('원딜', '~')}\n"
+                    f"팀원 5    : {team_lineup.get('서폿', '~')}\n\n"
                     f"[전체 게임 수]\n"
                     f"{total_games} / {wins} / {losses}\n"
+
                     f"승률 : {win_rate}%\n\n"
                     f"전적 보러 가기 : https://lol.ps/summoner/{SUMMONER_NAME}?region=kr"
                 )
                 print(start_msg)
-                # result = send_kakao_message(start_msg)
+                result = send_kakao_message(start_msg)
                 print("메시지 전송 결과:", result)
                 in_game = True
 
@@ -187,6 +188,7 @@ def monitor_game():
                     outcome = "승리" if finished_info.get("win") else "패배"
                     kda = f"{finished_info.get('kills')}/{finished_info.get('deaths')}/{finished_info.get('assists')}"
                     record_url = f"https://lol.ps/summoner/{SUMMONER_NAME}?region=kr"
+
                     # 전체 게임 정보 조회 (전체 게임 수, 이긴 판 수, 패배한 판 수, 승률)
                     total_games, wins, losses, win_rate = get_overall_game_stats(summoner_id)
 
@@ -232,7 +234,7 @@ def monitor_game():
                 print("상태 변화 없음.")
         except Exception as e:
             print("모니터링 중 오류 발생:", e)
-        time.sleep(2 if test_mode else 60)
+        time.sleep(2 if test_mode else 15)
 
 if __name__ == "__main__":
     monitor_game() 

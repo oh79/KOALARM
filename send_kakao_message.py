@@ -57,7 +57,7 @@ def send_kakao_message(text):
     try:
         open_chatroom(KAKAO_OPENTALK_NAME)  # 채팅방 열기
         kakao_sendtext(KAKAO_OPENTALK_NAME, text)  # 메시지 전송
-        time.sleep(1)
+        time.sleep(0.5)
         kakao_sendtext(KAKAO_OPENTALK_NAME, text)  # 메시지 전송
         return "카카오 메시지 전송 성공"
     except Exception as e:

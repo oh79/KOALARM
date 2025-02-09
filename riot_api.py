@@ -72,28 +72,13 @@ def format_team_lineup(team_participants):
 def get_start_game_info(puuid):
     """
     활성 게임 정보를 조회하여 게임이 진행 중이면 다음 정보를 반환합니다:
-      - 선택 챔피언 이름 (대상 소환사가 선택한 챔피언)
+      - 선택 챔피언 (대상 소환사가 선택한 챔피언)
       - 게임 경과 시간 (게임 시작 후 경과 시간, '분 초' 형식)
       - 게임 종류 (gameQueueConfigId 기준: 개인 랭크, 자유 랭크, 특별 게임 모드)
-      - 팀원 정보 (같은 팀 5명의 참가자에 대해, 각 팀원의 실제 소환사 이름과 챔피언 정보)
+      - 팀 라인업 (같은 팀 5명의 참가자에 대해 포지션별(탑, 정글, 미드, 원딜, 서폿) 정보 출력)
       - summonerId (대상 소환사의 암호화된 summonerId)
 
-    게임이 진행 중이지 않으면 False 반환.
-
-    반환 예시:
-      {
-         "champion": "제이스",
-         "gameTime": "9분 10초",
-         "gameType": "개인 랭크",
-         "teamLineup": {
-              "탑": "no1 다리우스킹#KR1 [아리]",
-              "정글": "抖音一休sup#小挽心 [제이스]",
-              "미드": "나는 짱 쎄다#KR1 [징크스]",
-              "원딜": "Adore정수정K#KR1 [바이]",
-              "서폿": "룰루 [룰루]"
-         },
-         "summonerId": "bs23KIeQszxJb0BHz2nXz4ggxJ-4Tg-xueWKN13ErDdFr8c"
-      }
+    게임이 진행 중이지 않으면 False를 반환합니다.
     """
     encrypted_puuid = quote(puuid)
     url = f"https://{RIOT_SUMMONER_REGION}.api.riotgames.com/lol/spectator/v5/active-games/by-summoner/{encrypted_puuid}"
@@ -101,13 +86,11 @@ def get_start_game_info(puuid):
 
     response = requests.get(url, headers=headers, timeout=10)
     if response.status_code == 404:
-        # 활성 게임 정보가 없으므로 False 반환
-        return False
+        return False  # 활성 게임 정보가 없으면 False 반환
     response.raise_for_status()
     game_data = response.json()
-    print(game_data)  # 디버깅용: game_data 확인
-
-    # 전달받은 puuid와 같은 참가자를 찾아 대상 소환사(target) 결정
+    # print(game_data)
+    # 대상 소환사(타겟) 찾기
     target = None
     for p in game_data.get("participants", []):
         if p.get("puuid") == puuid:
@@ -117,17 +100,17 @@ def get_start_game_info(puuid):
         print("타겟 참가자를 찾을 수 없습니다.")
         return False
 
-    # 대상 소환사가 선택한 챔피언 이름 (championId를 기반으로)
+    # 선택한 챔피언 이름 조회 (championId 기준)
     champion_id = target.get("championId")
     champion = get_champion_name(champion_id) if champion_id else "~"
 
-    # 게임 경과 시간 (초 단위를 분, 초 형식으로 변환)
-    game_length_seconds = game_data.get("gameLength", 0)
+    # 게임 경과 시간 계산 (보정된 150초 추가 후 '분 초' 형식)
+    game_length_seconds = game_data.get("gameLength", 0) + 150
     minutes = game_length_seconds // 60
     seconds = game_length_seconds % 60
     game_time_str = f"{minutes}분 {seconds}초"
 
-    # 게임 종류: gameQueueConfigId 값을 사용 (존재하지 않으면 기본값 "~")
+    # 게임 종류 결정 (gameQueueConfigId 기준)
     queue_id = game_data.get("gameQueueConfigId")
     if queue_id == 420:
         game_type = "개인 랭크"
@@ -138,11 +121,58 @@ def get_start_game_info(puuid):
     else:
         game_type = "~"
 
-    # 같은 팀 참가자(팀 ID가 동일한 참가자) 추출하여 팀 라인업 구성
+    # 동일 팀 참가자 추출
     my_team_id = target.get("teamId")
     team_participants = [p for p in game_data.get("participants", []) if p.get("teamId") == my_team_id]
-    
-    team_lineup = format_team_lineup(team_participants)
+
+    # 만약 팀 참가자 모두에 teamPosition 정보가 없다면(예: API 응답에 해당 필드 미존재, 5명 모두),
+    # 원래 순서대로 할당하여 format_team_lineup 함수가 정상 동작하도록 함.
+    if all(not p.get("teamPosition") for p in team_participants) and len(team_participants) == 5:
+        ordered_team_participants = team_participants
+    else:
+        # teamPosition(및 role) 값을 이용해 라인별로 참가자를 분류 (탑, 정글, 미드, 원딜, 서폿)
+        lane_mapping = {"탑": None, "정글": None, "미드": None, "원딜": None, "서폿": None}
+        for p in team_participants:
+            pos = (p.get("teamPosition") or "").upper()
+            role = (p.get("role") or "").upper()
+            lane = None
+            if pos == "TOP":
+                lane = "탑"
+            elif pos == "JUNGLE":
+                lane = "정글"
+            elif pos in ("MIDDLE", "MID"):
+                lane = "미드"
+            elif pos in ("BOTTOM",):
+                if role == "CARRY":
+                    lane = "원딜"
+                elif role == "SUPPORT":
+                    lane = "서폿"
+                else:
+                    lane = "원딜"
+            elif pos == "UTILITY":
+                lane = "서폿"
+            if lane and lane_mapping[lane] is None:
+                lane_mapping[lane] = p
+
+        ordered_team_participants = []
+        for lane in ["탑", "정글", "미드", "원딜", "서폿"]:
+            if lane_mapping[lane] is None:
+                # 해당 라인에 해당하는 플레이어 정보가 없으면 기본 더미 데이터를 사용
+                dummy = {
+                    "riotId": "~",
+                    "summonerName": "~",
+                    "summonerId": "알수없음",
+                    "championId": None,
+                    "kills": 0,
+                    "deaths": 0,
+                    "assists": 0
+                }
+                ordered_team_participants.append(dummy)
+            else:
+                ordered_team_participants.append(lane_mapping[lane])
+
+    # 팀 라인업 포맷팅: monitor_lol_game.py에서 사용하는 형식(탑, 정글, 미드, 원딜, 서폿)으로 변환
+    team_lineup = format_team_lineup(ordered_team_participants)
 
     return {
         "champion": champion,
